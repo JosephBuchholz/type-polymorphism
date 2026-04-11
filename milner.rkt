@@ -167,3 +167,15 @@
 
 (define init-env
   (hash 'x (binding 'λ 'Bool)))
+
+;; Some unit tests
+(module+ test
+  (require rackunit)
+  
+  (check-equal?
+    (W-alg '(λ (x) (λ (y) y)))
+    `(,(hash)
+      ((lambda (x : t0)
+        ((lambda (y : t1)
+          (y : t1)) : (t1 -> t1)))
+      : (t0 -> (t1 -> t1))))))
