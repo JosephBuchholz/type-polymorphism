@@ -18,6 +18,8 @@
 ;; [(fix (x : t) [e : t]) : t]
 ;; [(let ([[x : t] [e : t]]) [b : t]) : t]
 
+;; A Type is either a variable/identifier or a (Type -> Type)
+
 ;; A representation of a prefix
 (struct binding
   [form  ;; λ, fix, or let
@@ -42,7 +44,7 @@
         (hash-ref S x)
         x)]
     [`(,x -> ,y)
-      `(,(apply-sub S x) ,(apply-sub S y))]))
+      `(,(apply-sub S x) -> ,(apply-sub S y))]))
 
 ;; Substitution (HashOf Var Binding) -> (HashOf Var Binding)
 (define (apply-sub/type-env S type-env)
@@ -71,8 +73,15 @@
 ;; Substitution Substitution -> Substitution
 ;; Compute substitution that is equivalent to applying R and then S
 (define (apply-sub/sub S R)
-  (for/hash ([(k v) R])
-    (values k (apply-sub S v))))
+  (define mod-R
+    (for/hash ([(k v) R])
+      (values k (apply-sub S v))))
+  
+  (for/fold ([SR mod-R])
+            ([(k v) S])
+    (if (hash-has-key? mod-R k)
+      SR
+      (hash-set SR k v))))
 
 ;; Basically a gensym maker (makes outputs easier to read).
 (define (make-var-generator [base 't])
@@ -140,11 +149,57 @@
 
   (W f type-env))
 
-;; Exp Exp -> Substitution
+;; Type Type -> (or Substitution #f)
 ;; Robinson's unification algorithm
 (define (U-alg e1 e2)
-  ;; TODO: implement
-  (hash))
+  ;; Returns disagreement if disagreement found
+  ;; Returns false if disagreement not found
+  (define (find-disagreement e1 e2)
+    (match* (e1 e2)
+      [(`(,t1 -> ,t2) `(,t3 -> ,t4))
+        (define res (find-disagreement t1 t3))
+        (if res
+            res
+            (find-disagreement t2 t4))]
+      [(t1 t2)
+        (if (equal? t1 t2)
+          #f
+          (list t1 t2))]))
+
+  (define (occur V U)
+    (match U
+      [`(,t1 -> ,t2)
+        (or (occur V t1) (occur V t2))]
+      [t1
+        (equal? V t1)]))
+
+  (define (recur sub)
+    (define e1^ (apply-sub sub e1))
+    (define e2^ (apply-sub sub e2))
+    (if (equal? e1^ e2^)
+      sub ;; All good!
+      
+      (let ([disagreement (find-disagreement e1^ e2^)])
+        (when (not disagreement) (error 'faulty-unification))
+
+        (define V
+          (if (symbol? (first disagreement))
+            (first disagreement)
+            (second disagreement)))
+        (define U
+          (if (equal? V (first disagreement))
+            (second disagreement)
+            (first disagreement)))
+        
+        (if (not (symbol? V))
+          #f
+          
+          (if (occur V U)
+            #f
+            
+            (recur (hash-set (apply-sub/sub (hash V U) sub) V U)))))))
+  
+  (recur (hash)))
 
 ;; --- Tests ---
 
@@ -172,10 +227,41 @@
 (module+ test
   (require rackunit)
   
+  ;; U-alg tests
+  (define (test-U-sub U e1 e2)
+    (define e1^ (apply-sub U e1))
+    (define e2^ (apply-sub U e2))
+    (displayln e1^)
+    (displayln e2^)
+
+    (equal? e1^ e2^))
+
+  (check-equal?
+    (U-alg 'x '(y -> y))
+    (hash 'x '(y -> y)))
+
+  (define e1 '(x -> (x -> x)))
+  (define e2 '((y -> y) -> ((y -> y) -> (z -> z))))
+
+  (check-equal?
+    (test-U-sub (U-alg e1 e2) e1 e2)
+    #t) 
+
+  ;; W-alg tests
   (check-equal?
     (W-alg '(λ (x) (λ (y) y)))
     `(,(hash)
       ((lambda (x : t0)
         ((lambda (y : t1)
           (y : t1)) : (t1 -> t1)))
-      : (t0 -> (t1 -> t1))))))
+      : (t0 -> (t1 -> t1)))))
+  
+  (check-equal?
+    (W-alg '(λ (x) (λ (y) (y x))))
+    `(,(hash 't1 '(t0 -> t2))
+      ((lambda (x : t0)
+        ((lambda (y : (t0 -> t2)) (((y : (t0 -> t2)) (x : t0)) : t2))
+         :
+         ((t0 -> t2) -> t2)))
+       :
+       (t0 -> ((t0 -> t2) -> t2))))))
