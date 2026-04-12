@@ -2,7 +2,7 @@
 
 ;; See Milner's paper: https://doi.org/10.1016/0022-0000(78)90014-4
 
-;; Exp program:
+;; Exp program (optionally add booleans):
 ;; x
 ;; (e e)
 ;; (if g e d)
@@ -22,8 +22,12 @@
 
 ;; A representation of a prefix
 (struct binding
-  [form  ;; λ, fix, or let
-   type]
+  [form      ;; λ, fix, or let
+   type
+   type-env] ;; A type env local to this binding (i.e. keeps
+             ;; track of all bindings above this binding: this
+             ;; is for determining whether a variable is generic
+             ;; or not)
   #:transparent)
 
 ;; TypedExp -> Type
@@ -54,21 +58,29 @@
 ;; Substitution Binding -> Binding
 (define (apply-sub/binding S bind)
   (define new-type (apply-sub S (binding-type bind)))
-  (binding (binding-form bind) new-type))
+  (binding (binding-form bind) new-type (binding-type-env bind)))
 
 ;; Substitution TypedExp -> TypedExp
 (define (apply-sub/exp S exp)
   (match exp
     [`(,x : ,t)
       `(,(apply-sub/exp S x) : ,(apply-sub S t))]
+    [(? boolean? x)
+      x]
     [(? symbol? x)
       x]
     [`(,d ,e)
       `(,(apply-sub/exp S d) ,(apply-sub/exp S e))]
     [`(λ (,x : ,t) ,body)
-      `(λ (,x : ,(apply-sub t))
+      `(λ (,x : ,(apply-sub S t))
         ,(apply-sub/exp S body))]
-    [_ (error 'TODO-finish-sub/exp-cases)]))
+    [`(let ([,x : ,t] ,d) ,body)
+      `(let ([[,x : ,(apply-sub S t)] ,(apply-sub/exp S d)])
+        ,(apply-sub/exp S body))]
+    [_
+      (displayln S)
+      (displayln exp)
+      (error 'TODO-finish-sub/exp-cases)]))
 
 ;; Substitution Substitution -> Substitution
 ;; Compute substitution that is equivalent to applying R and then S
@@ -82,6 +94,24 @@
     (if (hash-has-key? mod-R k)
       SR
       (hash-set SR k v))))
+
+;; Type (HashOf Var Type) -> (SetOf TypeVar)
+(define (get-generic-type-vars type type-env)
+  (match type
+    [`(,t1 -> ,t2)
+      (set-union
+        (get-generic-type-vars t1 type-env)
+        (get-generic-type-vars t2 type-env))]
+    [t1
+      (define type-env-types
+        (map
+          (lambda (x)
+            (binding-type x))
+          (hash-values type-env)))
+      
+      (if (member type type-env-types)
+        (set)
+        (set t1))]))
 
 ;; Basically a gensym maker (makes outputs easier to read).
 (define (make-var-generator [base 't])
@@ -98,20 +128,27 @@
   (define (W f type-env)
     (match f
       [(? boolean? b)
-        'TODO-boolean]
+        `(,(hash) (,b : Bool))]
       [(? symbol? x)
         (define res (hash-ref type-env x))
         (match res
-          [(binding (or 'λ 'fix) type)
+          [(binding (or 'λ 'fix) type te)
             (define T (hash))
             (define f^ `(,x : ,type))
 
             `(,T ,f^)]
-          [(binding 'let type)
-            ;; TODO: wrong type
-            (error 'TODO-let-in-env)
+          [(binding 'let type te)
+            (define generics (get-generic-type-vars type te))
+
+            (define new-vars-sub
+              (for/hash ([generic generics])
+                (values generic (sym-gen))))
+
+            (define generic-instance
+              (apply-sub new-vars-sub type))
+
             (define T (hash))
-            (define f^ `(,x : ,type))
+            (define f^ `(,x : ,generic-instance))
 
             `(,T ,f^)])]
       [`(,d ,e)
@@ -132,20 +169,34 @@
         'TODO-if]
       [`(λ (,x) ,d)
         (define type-beta (sym-gen))
-        (match-define `(,R ,d^) (W d (hash-set type-env x (binding 'λ type-beta))))
+        (match-define `(,R ,d^) (W d (hash-set type-env x (binding 'λ type-beta type-env))))
         (define R-beta (apply-sub R type-beta))
         (define d^-type (get-type d^))
 
         (define T R)
         (define f^
-          `[(lambda (,x : ,R-beta)
+          `[(λ (,x : ,R-beta)
             ,d^) : (,R-beta -> ,d^-type)])
         
         `(,T ,f^)]
       [`(fix (,x) ,d)
         'TODO-fix]
       [`(let ([,x ,d]) ,e)
-        'TODO-let]))
+        (match-define `(,R ,d^) (W d type-env))
+        (define d^-type (get-type d^))
+        (define R-type-env (apply-sub/type-env R type-env))
+        (match-define `(,S ,e^) (W e (hash-set R-type-env x (binding 'let d^-type R-type-env))))
+        
+        (define e^-type (get-type e^))
+        (define final-d (apply-sub/exp S d^))
+        (define x-type (apply-sub S d^-type))
+
+        (define T (apply-sub/sub S R))
+        (define f^
+          `[(let ([[,x : ,x-type] ,final-d])
+              ,e^) : ,e^-type])
+        
+        `(,T ,f^)]))
 
   (W f type-env))
 
@@ -221,7 +272,11 @@
         #t)))
 
 (define init-env
-  (hash 'x (binding 'λ 'Bool)))
+  (hash 'x (binding 'λ 'Bool (hash))))
+
+;; Let polymorphism example. Type should be something like this: ((Bool -> t1) t1)
+#;(W-alg '(let ([I (λ (x) x)])                                    
+          (λ (y) ((I y) (I #t)))))
 
 ;; Some unit tests
 (module+ test
