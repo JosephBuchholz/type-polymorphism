@@ -2,23 +2,30 @@
 
 ;; See Milner's paper: https://doi.org/10.1016/0022-0000(78)90014-4
 
-;; Exp program (optionally add booleans):
+;; Examples:
+;; Let polymorphism example. Final type should be something like this: ((Bool -> t) t)
+#;(W-alg '(let ([I (λ (x) x)])                                    
+            (λ (y) ((I y) (I #t)))))
+
+;; Lambda calculus program with let polymorphism:
+;; #t | #f
 ;; x
 ;; (e e)
-;; (if g e d)
 ;; (λ (x) e)
-;; (fix (x) e)
 ;; (let ([x e]) b)
 
-;; TypedExp program:
+;; Program with types:
+;; [#t : Bool]
 ;; [x : t]
 ;; [([e : t] [e : t]) : t]
-;; [(if [g : t] [e : t] [d : t]) : t]
 ;; [(λ (x : t) [e : t]) : t]
-;; [(fix (x : t) [e : t]) : t]
 ;; [(let ([[x : t] [e : t]]) [b : t]) : t]
 
-;; A Type is either a variable/identifier or a (Type -> Type)
+(struct base-type
+  [name]
+  #:transparent)
+
+;; A Type is either a base-type or a type variable or a (Type -> Type)
 
 ;; A representation of a prefix
 (struct binding
@@ -30,20 +37,19 @@
              ;; or not)
   #:transparent)
 
-;; TypedExp -> Type
+;; TypedProgram -> Type
 (define (get-type typed-exp)
   (match typed-exp
     [`(,x : ,t)
       t]
-    [_
-      (error 'TODO)]))
+    [_ (error 'get-type-missing-case)]))
 
 ;; A Substitution is a (HashOf Type Type)
 
 ;; Substitution Type -> Type
 (define (apply-sub S type)
   (match type
-    [(? symbol? x)
+    [(or (? symbol? x) (? base-type? x))
       (if (hash-has-key? S x)
         (hash-ref S x)
         x)]
@@ -60,7 +66,7 @@
   (define new-type (apply-sub S (binding-type bind)))
   (binding (binding-form bind) new-type (binding-type-env bind)))
 
-;; Substitution TypedExp -> TypedExp
+;; Substitution TypedProgram -> TypedProgram
 (define (apply-sub/exp S exp)
   (match exp
     [`(,x : ,t)
@@ -77,10 +83,7 @@
     [`(let ([,x : ,t] ,d) ,body)
       `(let ([[,x : ,(apply-sub S t)] ,(apply-sub/exp S d)])
         ,(apply-sub/exp S body))]
-    [_
-      (displayln S)
-      (displayln exp)
-      (error 'TODO-finish-sub/exp-cases)]))
+    [_ (error 'apply-sub/exp-missing-case)]))
 
 ;; Substitution Substitution -> Substitution
 ;; Compute substitution that is equivalent to applying R and then S
@@ -123,12 +126,12 @@
     (string->symbol (string-append base-string
                                    counter-string))))
 
-;; Exp [(HashOf Var Binding)] -> TypedExp
+;; Program [(HashOf Var Binding)] -> TypedProgram
 (define (W-alg f [type-env (hash)] [sym-gen (make-var-generator)])
   (define (W f type-env)
     (match f
       [(? boolean? b)
-        `(,(hash) (,b : Bool))]
+        `(,(hash) (,b : ,(base-type 'Bool)))]
       [(? symbol? x)
         (define res (hash-ref type-env x))
         (match res
@@ -165,8 +168,6 @@
         (define f^ (apply-sub/exp U new-f))
 
         `(,T ,f^)]
-      [`(if ,g ,d ,e)
-        'TODO-if]
       [`(λ (,x) ,d)
         (define type-beta (sym-gen))
         (match-define `(,R ,d^) (W d (hash-set type-env x (binding 'λ type-beta type-env))))
@@ -179,8 +180,6 @@
             ,d^) : (,R-beta -> ,d^-type)])
         
         `(,T ,f^)]
-      [`(fix (,x) ,d)
-        'TODO-fix]
       [`(let ([,x ,d]) ,e)
         (match-define `(,R ,d^) (W d type-env))
         (define d^-type (get-type d^))
@@ -242,41 +241,30 @@
             (second disagreement)
             (first disagreement)))
         
-        (if (not (symbol? V))
+        (if (not (or (symbol? V) (base-type? V)))
           #f
           
           (if (occur V U)
             #f
             
-            (recur (hash-set (apply-sub/sub (hash V U) sub) V U)))))))
+            (recur (apply-sub/sub (hash V U) sub)))))))
   
   (recur (hash)))
 
-;; --- Tests ---
-
-;; cons -> a x b
-#;(define ex-tag-pair1
-  '(λ (a)
-    (λ (b) (λ (c)
-      ((cons
-        ((cons a) b))
-        ((cons a) c))))))
-
-(define ex-identity
-  '(λ (a) a))
-
-(define ex-not
-  '(λ (x)
-    (if x
-        #f
-        #t)))
-
-(define init-env
-  (hash 'x (binding 'λ 'Bool (hash))))
-
-;; Let polymorphism example. Type should be something like this: ((Bool -> t1) t1)
-#;(W-alg '(let ([I (λ (x) x)])                                    
-          (λ (y) ((I y) (I #t)))))
+;; Helper to pretty print the infered type for f.
+(define (display-final-type! f)
+  (define res (W-alg f))
+  
+  (define (pretty type)
+    (match type
+      [(? base-type? t)
+        (base-type-name t)]
+      [(? symbol? t)
+        t]
+      [`(,t1 -> ,t2)
+        `(,(pretty t1) -> ,(pretty t2))]))
+  
+  (displayln (pretty (get-type (second res)))))
 
 ;; Some unit tests
 (module+ test
